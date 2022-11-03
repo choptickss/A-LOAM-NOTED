@@ -113,6 +113,7 @@ void removeClosedPointCloud(const pcl::PointCloud<PointT> &cloud_in,
 
 void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 {
+    //=========处理原始点云
     if (!systemInited)
     { 
         systemInitCount++;
@@ -136,10 +137,11 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
     // 首先对点云滤波，去除NaN值得无效点云，以及在Lidar坐标系原点MINIMUM_RANGE距离以内的点
     pcl::removeNaNFromPointCloud(laserCloudIn, laserCloudIn, indices);
     removeClosedPointCloud(laserCloudIn, laserCloudIn, MINIMUM_RANGE);
+    // =========处理原始点云
 
-
+    // laserCloudMsg转到了laserCloudIn，一帧点云
     int cloudSize = laserCloudIn.points.size();
-    float startOri = -atan2(laserCloudIn.points[0].y, laserCloudIn.points[0].x);
+    float startOri = -atan2(laserCloudIn.points[0].y, laserCloudIn.points[0].x); //计算起点，因为不是每帧扫描的起始位置都是从0度开始，atan2 ->[-Π,Π]
     float endOri = -atan2(laserCloudIn.points[cloudSize - 1].y,
                           laserCloudIn.points[cloudSize - 1].x) +
                    2 * M_PI;
@@ -164,7 +166,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         point.y = laserCloudIn.points[i].y;
         point.z = laserCloudIn.points[i].z;
 
-        float angle = atan(point.z / sqrt(point.x * point.x + point.y * point.y)) * 180 / M_PI;
+        float angle = atan(point.z / sqrt(point.x * point.x + point.y * point.y)) * 180 / M_PI; //给每一个点打上线tag
         int scanID = 0;
 
         if (N_SCANS == 16)
@@ -236,14 +238,15 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
             }
         }
 
-        float relTime = (ori - startOri) / (endOri - startOri);
-        point.intensity = scanID + scanPeriod * relTime;
-        laserCloudScans[scanID].push_back(point); 
+        float relTime = (ori - startOri) / (endOri - startOri);//用以计算相对的时间：周期*转过的角度在2pi中的比例
+        point.intensity = scanID + scanPeriod * relTime;//intensity用scanID和时间替换
+        laserCloudScans[scanID].push_back(point); //保存到laserCloudScans，这个容器记录了每个点的scanID和时间
     }
     
     cloudSize = count;
     printf("points size %d \n", cloudSize);
 
+    //去掉前这一帧的五个点和后五个点
     pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>());
     for (int i = 0; i < N_SCANS; i++)
     { 
@@ -254,13 +257,14 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
     printf("prepare time %f \n", t_prepare.toc());
 
+    //开始计算曲率
     for (int i = 5; i < cloudSize - 5; i++)
     { 
         float diffX = laserCloud->points[i - 5].x + laserCloud->points[i - 4].x + laserCloud->points[i - 3].x + laserCloud->points[i - 2].x + laserCloud->points[i - 1].x - 10 * laserCloud->points[i].x + laserCloud->points[i + 1].x + laserCloud->points[i + 2].x + laserCloud->points[i + 3].x + laserCloud->points[i + 4].x + laserCloud->points[i + 5].x;
         float diffY = laserCloud->points[i - 5].y + laserCloud->points[i - 4].y + laserCloud->points[i - 3].y + laserCloud->points[i - 2].y + laserCloud->points[i - 1].y - 10 * laserCloud->points[i].y + laserCloud->points[i + 1].y + laserCloud->points[i + 2].y + laserCloud->points[i + 3].y + laserCloud->points[i + 4].y + laserCloud->points[i + 5].y;
         float diffZ = laserCloud->points[i - 5].z + laserCloud->points[i - 4].z + laserCloud->points[i - 3].z + laserCloud->points[i - 2].z + laserCloud->points[i - 1].z - 10 * laserCloud->points[i].z + laserCloud->points[i + 1].z + laserCloud->points[i + 2].z + laserCloud->points[i + 3].z + laserCloud->points[i + 4].z + laserCloud->points[i + 5].z;
 
-        cloudCurvature[i] = diffX * diffX + diffY * diffY + diffZ * diffZ;
+        cloudCurvature[i] = diffX * diffX + diffY * diffY + diffZ * diffZ;//曲率，记录这一个点周围变化的快慢
         cloudSortInd[i] = i;
         cloudNeighborPicked[i] = 0;// 点有没有被选选择为feature点
         cloudLabel[i] = 0;// Label 2: corner_sharp
@@ -283,7 +287,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
         if( scanEndInd[i] - scanStartInd[i] < 6)// 如果该scan的点数少于7个点，就跳过
             continue;
         pcl::PointCloud<PointType>::Ptr surfPointsLessFlatScan(new pcl::PointCloud<PointType>);
-        for (int j = 0; j < 6; j++)// 将该scan分成6小段执行特征检测
+        for (int j = 0; j < 6; j++)// 将该scan分成6小段执行特征检测，把360度划分成6个区间，每个区间分别提取一些点，使特征的分布是均匀的
         {
             int sp = scanStartInd[i] + (scanEndInd[i] - scanStartInd[i]) * j / 6;// subscan的起始index
             int ep = scanStartInd[i] + (scanEndInd[i] - scanStartInd[i]) * (j + 1) / 6 - 1;// subscan的结束index
